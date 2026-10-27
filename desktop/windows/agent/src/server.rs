@@ -12,10 +12,12 @@ use pir_pairing::{fingerprint_hex, Fingerprint};
 use pir_protocol::events::{DisconnectReason, EventMetadata, InputEvent, ProtocolVersion, SessionEventType};
 use pir_protocol::version::negotiate_version;
 use pir_session::capabilities::{get_default_desktop_capabilities, negotiate_capabilities};
-use pir_session::heartbeat::heartbeat_ack;
+use pir_session::heartbeat::{handle_incoming_heartbeat, HeartbeatManager};
+use pir_session::state::SessionManager;
 use pir_transport::config::QuicConfig;
 use pir_transport::quic::{QuicServerConnection, QuicServerTransport, TlsIdentity};
 use pir_transport::InputTransport;
+use tokio::sync::mpsc;
 use tracing::{error, info, warn};
 use uuid::Uuid;
 use crate::dispatch::Dispatcher;
@@ -40,6 +42,7 @@ pub struct Agent {
     name: String,
     endpoints: Vec<String>,
     metrics: Arc<MetricsCollector>,
+    session_manager: Arc<tokio::sync::Mutex<SessionManager>>,
 }
 
 impl Agent {
@@ -48,6 +51,9 @@ impl Agent {
         let identity = TlsIdentity::from_der(stored.cert_der, stored.key_der);
         let server = QuicServerTransport::bind_with_identity(&QuicConfig::default().with_bind_addr(config.bind), identity).await?;
         let trust = TrustStore::open(config.data_dir.join(TrustStore::FILE_NAME))?;
+        let session_manager = Arc::new(tokio::sync::Mutex::new(SessionManager::new(
+            get_default_desktop_capabilities(),
+        )));
 
         let local = server.local_addr()?;
         let endpoints = match config.advertise {
@@ -59,7 +65,7 @@ impl Agent {
             None => vec![local.to_string()],
         };
 
-        Ok(Self { server, trust, pairing: None, name: config.name.clone(), endpoints, metrics: Arc::new(MetricsCollector::new()) })
+        Ok(Self { server, trust, pairing: None, name: config.name.clone(), endpoints, metrics: Arc::new(MetricsCollector::new()), session_manager })
     }
 
     pub fn local_addr(&self) -> Result<SocketAddr> {
@@ -116,7 +122,8 @@ impl Agent {
 
             info!("{} connected from {}", device, remote);
             dispatcher.reset_session(conn.session_id());
-            let reason = serve_connection(&mut conn, &mut dispatcher, &self.metrics).await;
+            let session_id = conn.session_id();
+            let reason = serve_connection(&mut conn, &mut dispatcher, &self.metrics, self.session_manager.clone(), session_id).await;
             // Whatever ended the session, nothing may stay pressed.
             dispatcher.release_all();
             let _ = conn.close().await;
@@ -159,62 +166,120 @@ async fn serve_connection<A: InputAdapter>(
     conn: &mut QuicServerConnection,
     dispatcher: &mut Dispatcher<A>,
     metrics: &MetricsCollector,
+    session_manager: Arc<tokio::sync::Mutex<SessionManager>>,
+    session_id: Uuid,
 ) -> String {
-    let session_id = conn.session_id();
-    loop {
-        let event = match conn.recv().await {
-            Ok(event) => event,
-            Err(e) => return format!("connection error: {e}"),
-        };
-        metrics.record_packet_received(0);
-
-        if let InputEvent::SessionEvent { event: session_event, .. } = &event {
-            let reply = match session_event {
-                SessionEventType::Hello { version, capabilities } => match negotiate_version(*version, ProtocolVersion::CURRENT) {
-                    Ok(negotiated) => {
-                        let caps = negotiate_capabilities(*capabilities, get_default_desktop_capabilities());
-                        info!("Hello from phone: protocol {} capabilities {:?}", negotiated, caps);
-                        InputEvent::SessionEvent {
-                            metadata: EventMetadata::new(session_id, 0),
-                            event: SessionEventType::HelloAck { version: negotiated, capabilities: caps },
-                        }
-                    }
-                    Err(e) => {
-                        let _ = conn.send_reliable(&disconnect(session_id, DisconnectReason::ProtocolMismatch)).await;
-                        return format!("protocol mismatch: {e}");
-                    }
-                },
-                SessionEventType::Heartbeat => heartbeat_ack(session_id),
-                // Already paired: confirm, so a phone retrying a pairing doesn't hang.
-                SessionEventType::PairRequest { .. } => pair_result(session_id, true),
-                SessionEventType::Disconnect { reason } => return format!("peer disconnected ({reason:?})"),
-                SessionEventType::HelloAck { .. }
-                | SessionEventType::HeartbeatAck
-                | SessionEventType::Reconnect { .. }
-                | SessionEventType::PairResult { .. } => continue,
-            };
-            if let Err(e) = conn.send_reliable(&reply).await {
-                return format!("failed to reply: {e}");
-            }
-            continue;
-        }
-
-        let start = Instant::now();
-        match dispatcher.apply(&event) {
-            Ok(true) => {
-                metrics.record_injection_time(start.elapsed().as_micros() as u64);
-                metrics.record_event_sent();
-            }
-            Ok(false) => {}
-            Err(e) => error!("Event handling error: {}", e),
-        }
-        let state = dispatcher.state();
-        metrics.update_state(
-            state.get_held_keys().len() as u32,
-            state.get_held_buttons().len() as u32,
-            state.has_active_composition(),
-        );
+    // Register the session so the heartbeat manager can track liveness.
+    {
+        let mut manager = session_manager.lock().await;
+        manager.create_session();
     }
+
+    // Channel for the heartbeat manager to push outgoing heartbeat/disconnect events.
+    let (heartbeat_tx, mut heartbeat_rx) = mpsc::unbounded_channel::<InputEvent>();
+
+    // Spawn the heartbeat manager: it sends heartbeats every interval and disconnects
+    // the session when the peer goes silent for too many intervals.
+    let heartbeat = HeartbeatManager::new(
+        session_id,
+        Duration::from_secs(5),
+        session_manager.clone(),
+        heartbeat_tx.clone(),
+    );
+    let heartbeat_handle = tokio::spawn(heartbeat.run());
+
+    let heartbeat_result = loop {
+        tokio::select! {
+            event = conn.recv() => {
+                match event {
+                    Ok(event) => {
+                        metrics.record_packet_received(0);
+
+                        // Any inbound activity keeps the session alive.
+                        {
+                            let mut manager = session_manager.lock().await;
+                            if let Some(s) = manager.get_session_mut(session_id) {
+                                s.update_activity();
+                            }
+                        }
+
+                        if let InputEvent::SessionEvent { event: session_event, .. } = &event {
+                            let reply = match session_event {
+                                SessionEventType::Hello { version, capabilities } => match negotiate_version(*version, ProtocolVersion::CURRENT) {
+                                    Ok(negotiated) => {
+                                        let caps = negotiate_capabilities(*capabilities, get_default_desktop_capabilities());
+                                        info!("Hello from phone: protocol {} capabilities {:?}", negotiated, caps);
+                                        InputEvent::SessionEvent {
+                                            metadata: EventMetadata::new(session_id, 0),
+                                            event: SessionEventType::HelloAck { version: negotiated, capabilities: caps },
+                                        }
+                                    }
+                                    Err(e) => {
+                                        let _ = conn.send_reliable(&disconnect(session_id, DisconnectReason::ProtocolMismatch)).await;
+                                        break format!("protocol mismatch: {e}");
+                                    }
+                                },
+                                SessionEventType::Heartbeat => {
+                                    // Update liveness and answer with a HeartbeatAck.
+                                    let _ = handle_incoming_heartbeat(
+                                        session_manager.clone(), session_id, false, &heartbeat_tx,
+                                    ).await;
+                                    continue;
+                                }
+                                SessionEventType::Disconnect { reason } => break format!("peer disconnected ({reason:?})"),
+                                SessionEventType::HelloAck { .. }
+                                | SessionEventType::HeartbeatAck
+                                | SessionEventType::Reconnect { .. }
+                                | SessionEventType::PairResult { .. } => continue,
+                                SessionEventType::PairRequest { .. } => continue,
+                            };
+                            if let Err(e) = conn.send_reliable(&reply).await {
+                                break format!("failed to reply: {e}");
+                            }
+                            continue;
+                        }
+
+                        let start = Instant::now();
+                        match dispatcher.apply(&event) {
+                            Ok(true) => {
+                                metrics.record_injection_time(start.elapsed().as_micros() as u64);
+                                metrics.record_event_sent();
+                            }
+                            Ok(false) => {}
+                            Err(e) => error!("Event handling error: {}", e),
+                        }
+                        let state = dispatcher.state();
+                        metrics.update_state(
+                            state.get_held_keys().len() as u32,
+                            state.get_held_buttons().len() as u32,
+                            state.has_active_composition(),
+                        );
+                    }
+                    Err(e) => break format!("connection error: {e}"),
+                }
+            }
+            Some(event) = heartbeat_rx.recv() => {
+                match conn.send_reliable(&event).await {
+                    Ok(()) => {}
+                    Err(e) => break format!("failed to send heartbeat: {e}"),
+                }
+            }
+            else => break "channel closed".to_string(),
+        }
+    };
+
+    heartbeat_handle.abort();
+    let _ = heartbeat_handle.await;
+
+    // Whatever ended the session, nothing may stay pressed.
+    dispatcher.release_all();
+    let _ = conn.close().await;
+
+    if let Some(session) = session_manager.lock().await.get_session_mut(session_id) {
+        session.disconnect(DisconnectReason::Timeout);
+    }
+
+    heartbeat_result
 }
 
 fn disconnect(session_id: Uuid, reason: DisconnectReason) -> InputEvent {

@@ -55,8 +55,14 @@ impl InputStateManager {
     pub fn handle_mouse_button(&mut self, button: MouseButton, pressed: bool) -> Vec<InputEvent> {
         if pressed {
             self.held_mouse_buttons.insert(button);
+            if button == MouseButton::Left {
+                self.active_drag = Some(DragState { button });
+            }
         } else {
             self.held_mouse_buttons.remove(&button);
+            if button == MouseButton::Left {
+                self.active_drag.take();
+            }
         }
         self.sequence_number += 1;
         vec![InputEvent::MouseButton {
@@ -243,5 +249,22 @@ mod tests {
         assert!(state.get_held_keys().is_empty());
         assert_eq!(state.get_modifiers(), ModifierState::default());
         assert!(state.reset_input_state().is_empty());
+    }
+
+    #[test]
+    fn mouse_button_press_starts_drag_and_release_ends_it() {
+        let mut state = InputStateManager::new(Uuid::nil());
+        state.handle_mouse_button(MouseButton::Left, true);
+        assert!(state.active_drag.is_some());
+        assert_eq!(state.active_drag.as_ref().unwrap().button, MouseButton::Left);
+        state.handle_mouse_button(MouseButton::Left, false);
+        assert!(state.active_drag.is_none());
+    }
+
+    #[test]
+    fn right_button_does_not_start_drag() {
+        let mut state = InputStateManager::new(Uuid::nil());
+        state.handle_mouse_button(MouseButton::Right, true);
+        assert!(state.active_drag.is_none());
     }
 }

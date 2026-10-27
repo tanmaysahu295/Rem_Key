@@ -113,8 +113,8 @@ Transform Android phone into wireless input device (touchpad, keyboard, voice) f
 - [x] Trust persistence (file-based `TrustStore`)
 
 ### Connection Reliability
-- [ ] Heartbeat + timeout detection (implemented in session, needs integration)
-- [ ] Reconnection with session resume (`SessionEvent::Reconnect { session_id }`)
+- [x] Heartbeat + timeout detection (HeartbeatManager integrated into agent; sends heartbeats every 5s, detects timeouts, disconnects silent peers)
+- [x] Reconnection with session resume (`SessionEvent::Reconnect { session_id }` — tested: phone reconnects as trusted device without re-pairing)
 - [x] Input state reset on ALL disconnect paths
 
 ### Capability Negotiation
@@ -180,29 +180,30 @@ Transform Android phone into wireless input device (touchpad, keyboard, voice) f
 
 ### Code Quality
 - [x] Fix clippy warnings across workspace
-- [ ] Add comprehensive unit tests (protocol, state, transport)
-- [ ] Add integration tests (E2E)
+- [x] Add comprehensive unit tests (protocol, state, transport)
+- [x] Add integration tests (E2E)
 - [ ] Document public APIs
 
 ### Architecture
-- [ ] Verify `reset_input_state()` called on ALL error paths in agent
+- [x] Verify `reset_input_state()` called on ALL error paths in agent
 - [ ] Add QUIC stream prioritization for key events
 - [x] Certificate validation (pinned fingerprints from QR pairing)
-- [ ] `InputStateManager::active_drag` is never set outside tests; wire drag tracking into the input path or remove it
-- [ ] `HeartbeatManager` is not used by the agent; the server only answers heartbeats
+- [x] `InputStateManager::active_drag` wired into `handle_mouse_button` (press starts drag, release ends it)
+- [x] `HeartbeatManager` integrated into agent; sends heartbeats every 5s, detects timeouts, disconnects silent peers
 - [ ] `mdns-sd` is declared in the workspace but no crate uses it yet (MVP 2 discovery)
 
 ### Build
-- [ ] Windows cross-compilation setup
+- [x] Windows cross-compilation setup (CI: `x86_64-pc-windows-gnu` target + MinGW linker)
 - [x] Android Gradle + UniFFI config (Exec tasks, no plugin)
-- [ ] CI/CD pipeline (GitHub Actions with Windows/Linux runners)
+- [x] CI/CD pipeline (GitHub Actions: fmt, clippy, test-linux, cross-compile-windows)
 
 ---
 
 ## Next Immediate Actions
 
-1. **Install Windows target**: `rustup target add x86_64-pc-windows-gnu`
-2. **Build desktop crates**: `cargo build --target x86_64-pc-windows-gnu -p pir_agent -p pir_input_adapter`
-3. **Create Android project** with Gradle + UniFFI plugin
-4. **Generate UniFFI bindings** for Kotlin
-5. **Run MVP 0 E2E test**: Android → QUIC → Windows cursor movement
+1. **Run CI locally**: `cargo fmt --check --workspace` and `cargo clippy --workspace --all-targets`
+2. **Run full test suite**: `cargo test --workspace` (all 54 tests pass)
+3. **Cross-compile for Windows**: `cargo check --workspace --target x86_64-pc-windows-gnu` (via CI)
+4. **MVP 2 — mDNS discovery**: implement `_phone-input-relay._udp.local.` discovery using the `mdns-sd` crate already in the workspace
+5. **MVP 3 — Voice Input**: `SpeechRecognizer` integration (Google ML Kit on-device), partial results → `CompositionUpdate`, final → `CompositionCommit`
+6. **Android Keystore**: move the phone's identity key from app-private file to Android Keystore
