@@ -4,7 +4,6 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.waitForUpOrCancellation
-import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -16,9 +15,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -26,7 +23,6 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -35,10 +31,8 @@ import androidx.compose.ui.input.pointer.changedToDownIgnoreConsumed
 import androidx.compose.ui.input.pointer.changedToUpIgnoreConsumed
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.positionChanged
-import androidx.compose.ui.text.input.ImeAction
-import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
-import dev.remkey.relay.EditingKey
+import androidx.compose.ui.text.style.TextAlign
 import dev.remkey.relay.PointerButton
 import dev.remkey.relay.RelayCommand
 import dev.remkey.touchpad.TouchpadGestures
@@ -52,13 +46,14 @@ fun TouchpadScreen(
     gestures: TouchpadGestures,
     onCommand: (RelayCommand) -> Unit,
     onDisconnect: () -> Unit,
+    onNavigateToKeyboard: () -> Unit,
 ) {
     Column(
         Modifier
             .fillMaxSize()
             .padding(horizontal = Space.m, vertical = Space.s),
     ) {
-        Header(desktopLabel, onDisconnect)
+        Header(desktopLabel, onDisconnect, onNavigateToKeyboard)
         Spacer(Modifier.height(Space.s))
         Touchpad(gestures, Modifier.weight(1f).fillMaxWidth())
         Spacer(Modifier.height(Space.s))
@@ -66,15 +61,15 @@ fun TouchpadScreen(
             HoldButton("Left", PointerButton.Left, onCommand, Modifier.weight(1f))
             HoldButton("Right", PointerButton.Right, onCommand, Modifier.weight(1f))
         }
-        Spacer(Modifier.height(Space.m))
-        EditingKeys(onCommand)
-        Spacer(Modifier.height(Space.s))
-        TypeBox(onCommand)
     }
 }
 
 @Composable
-private fun Header(desktopLabel: String, onDisconnect: () -> Unit) {
+private fun Header(
+    desktopLabel: String,
+    onDisconnect: () -> Unit,
+    onNavigateToKeyboard: () -> Unit,
+) {
     Row(Modifier.fillMaxWidth().padding(start = Space.s), verticalAlignment = Alignment.CenterVertically) {
         Box(Modifier.size(8.dp).clip(CircleShape).background(MaterialTheme.colorScheme.connected))
         Spacer(Modifier.width(Space.s + Space.xs))
@@ -84,6 +79,9 @@ private fun Header(desktopLabel: String, onDisconnect: () -> Unit) {
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.weight(1f),
         )
+        TextButton(onClick = onNavigateToKeyboard) {
+            Text("Keyboard", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
         TextButton(onClick = onDisconnect) {
             Text("Disconnect", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
@@ -132,7 +130,12 @@ private fun Touchpad(gestures: TouchpadGestures, modifier: Modifier) {
 
 /** Pressed for as long as the finger is down, so it can be held while dragging on the pad. */
 @Composable
-private fun HoldButton(label: String, button: PointerButton, onCommand: (RelayCommand) -> Unit, modifier: Modifier) {
+private fun HoldButton(
+    label: String,
+    button: PointerButton,
+    onCommand: (RelayCommand) -> Unit,
+    modifier: Modifier,
+) {
     var pressed by remember { mutableStateOf(false) }
     val colors = MaterialTheme.colorScheme
     Box(
@@ -157,55 +160,4 @@ private fun HoldButton(label: String, button: PointerButton, onCommand: (RelayCo
     ) {
         Text(label, style = MaterialTheme.typography.labelLarge, color = colors.onSurfaceVariant)
     }
-}
-
-private val editingKeys = listOf(
-    "esc" to EditingKey.Escape,
-    "tab" to EditingKey.Tab,
-    "←" to EditingKey.ArrowLeft,
-    "↓" to EditingKey.ArrowDown,
-    "↑" to EditingKey.ArrowUp,
-    "→" to EditingKey.ArrowRight,
-    "⌫" to EditingKey.Backspace,
-    "⏎" to EditingKey.Enter,
-)
-
-@Composable
-private fun EditingKeys(onCommand: (RelayCommand) -> Unit) {
-    Row(
-        Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
-        horizontalArrangement = Arrangement.spacedBy(Space.xs),
-    ) {
-        for ((label, key) in editingKeys) {
-            TextButton(
-                onClick = {
-                    onCommand(RelayCommand.Key(key, pressed = true))
-                    onCommand(RelayCommand.Key(key, pressed = false))
-                },
-                shape = MaterialTheme.shapes.small,
-            ) {
-                Text(label, style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.onBackground)
-            }
-        }
-    }
-}
-
-/** Text goes to the desktop when sent, so IME suggestions and dictation work as usual. */
-@Composable
-private fun TypeBox(onCommand: (RelayCommand) -> Unit) {
-    var text by rememberSaveable { mutableStateOf("") }
-    QuietField(
-        value = text,
-        onValueChange = { text = it },
-        placeholder = "Type, then send",
-        imeAction = ImeAction.Send,
-        autoCorrect = true,
-        keyboardActions = KeyboardActions(onSend = {
-            if (text.isNotEmpty()) {
-                onCommand(RelayCommand.CommitText(text))
-                text = ""
-            }
-        }),
-        modifier = Modifier.fillMaxWidth(),
-    )
 }

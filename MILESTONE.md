@@ -146,9 +146,11 @@ Transform Android phone into wireless input device (touchpad, keyboard, voice) f
 - [x] Gradle project: KMP `shared` module + Jetpack Compose `androidApp`
 - [x] UniFFI bindings generation and cargo-ndk build wired into Gradle
 - [x] Touchpad UI (shared `TouchpadGestures`: move, tap/two-finger tap, natural two-finger scroll)
-- [x] Keyboard UI (committed text + editing keys)
+- [x] **Keyboard UI**: dedicated `KeyboardScreen` with Gboard (system keyboard) for text entry, `CommitText` on IME Done, special key row (Enter, Backspace, Delete, Tab, Escape, arrows, Home, End, PageUp, PageDown)
+- [x] **Bottom navigation**: Touchpad / Keyboard / Voice screens with `Screen` sealed class state management
+- [x] Voice screen placeholder (Phase 2: SpeechRecognizer integration)
 - [x] QUIC client integration
-- [ ] First build on a machine with the Android SDK/NDK, then on a real phone
+- [x] First build on a machine with the Android SDK/NDK, then on a real phone (debug APK builds successfully)
 - [x] mTLS client identity: persistent phone certificate, pairing via the agent's pairing code, reconnect as a trusted device
 - [x] Scan the pairing QR code (Google code scanner, no camera permission; pasting the printed pairing data still works)
 - [ ] Keep the phone key in Android Keystore instead of an app-private file
@@ -202,8 +204,8 @@ Transform Android phone into wireless input device (touchpad, keyboard, voice) f
 ## Next Immediate Actions
 
 1. **Run CI locally**: `cargo fmt --check --workspace` and `cargo clippy --workspace --all-targets`
-2. **Run full test suite**: `cargo test --workspace` (all 54 tests pass)
-3. **Cross-compile for Windows**: `cargo check --workspace --target x86_64-pc-windows-gnu` (via CI)
+2. **Run full test suite**: `cargo test --workspace` (all 66 tests pass)
+3. **Android debug APK**: `cd mobile && ./gradlew :androidApp:assembleDebug` (builds successfully)
 4. **MVP 2 — mDNS discovery**: implement `_phone-input-relay._udp.local.` discovery using the `mdns-sd` crate already in the workspace
-5. **MVP 3 — Voice Input**: `SpeechRecognizer` integration (Google ML Kit on-device), partial results → `CompositionUpdate`, final → `CompositionCommit`
+5. **MVP 3 — Voice Input**: implement `VoiceScreen` with Android `SpeechRecognizer`, partial results → `CompositionUpdate`, final → `CompositionCommit`
 6. **Android Keystore**: move the phone's identity key from app-private file to Android Keystore

@@ -28,7 +28,7 @@ pub struct PairingCode {
 #[uniffi::export]
 pub fn parse_pairing_code(text: String) -> Result<PairingCode, RelayError> {
     let info = PairingInfo::from_json(text.trim())
-        .map_err(|e| RelayError::InvalidPairingCode { message: e.to_string() })?;
+        .map_err(|e| RelayError::InvalidPairingCode { details: e.to_string() })?;
     let code = PairingCode {
         desktop: DesktopTarget { name: info.name, endpoints: info.endpoints, fingerprint: info.cert_fingerprint },
         secret: info.secret,
@@ -41,7 +41,7 @@ pub fn parse_pairing_code(text: String) -> Result<PairingCode, RelayError> {
 
 pub(crate) fn parse_endpoints(endpoints: &[String]) -> Result<Vec<SocketAddr>, RelayError> {
     if endpoints.is_empty() {
-        return Err(RelayError::InvalidAddress { message: "no desktop address".into() });
+        return Err(RelayError::InvalidAddress { details: "no desktop address".into() });
     }
     endpoints.iter().map(|e| parse_endpoint(e)).collect()
 }
@@ -55,18 +55,18 @@ fn parse_endpoint(endpoint: &str) -> Result<SocketAddr, RelayError> {
             let (host, port) = endpoint.rsplit_once(':').ok_or(())?;
             format!("[{host}]:{port}").parse().map_err(|_| ())
         })
-        .map_err(|_| RelayError::InvalidAddress { message: endpoint.to_string() })
+        .map_err(|_| RelayError::InvalidAddress { details: endpoint.to_string() })
 }
 
 pub(crate) fn parse_fingerprint(hex: &str) -> Result<CertFingerprint, RelayError> {
     let hex: String = hex.chars().filter(|c| !c.is_whitespace() && *c != ':').collect();
     if hex.len() != 64 {
-        return Err(RelayError::InvalidFingerprint { message: "expected 64 hex characters".into() });
+        return Err(RelayError::InvalidFingerprint { details: "expected 64 hex characters".into() });
     }
     let mut out = [0u8; 32];
     for (i, byte) in out.iter_mut().enumerate() {
         *byte = u8::from_str_radix(&hex[i * 2..i * 2 + 2], 16)
-            .map_err(|_| RelayError::InvalidFingerprint { message: "not hexadecimal".into() })?;
+            .map_err(|_| RelayError::InvalidFingerprint { details: "not hexadecimal".into() })?;
     }
     Ok(out)
 }

@@ -62,7 +62,7 @@ impl RelayClient {
     #[uniffi::constructor]
     pub fn new(data_dir: String) -> Result<Arc<Self>, RelayError> {
         let identity = load_identity(Path::new(&data_dir))
-            .map_err(|e| RelayError::Identity { message: format!("{e:#}") })?;
+            .map_err(|e| RelayError::Identity { details: format!("{e:#}") })?;
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(2)
             .thread_name("pir-relay")
